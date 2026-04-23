@@ -1,0 +1,208 @@
+
+<style>
+#lif-canvas { width: 100%; }
+.lif-btn { font-size: 13px; padding: 6px 16px; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); background: var(--color-background-primary); color: var(--color-text-primary); cursor: pointer; transition: background 0.15s; }
+.lif-btn:hover { background: var(--color-background-secondary); }
+.lif-btn:active { transform: scale(0.97); }
+.stat-label { font-size: 12px; color: var(--color-text-secondary); }
+.stat-val { font-size: 20px; font-weight: 500; color: var(--color-text-primary); }
+</style>
+
+<div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:12px;">
+  <button class="lif-btn" onclick="sendInput()">Send input pulse ↗</button>
+  <button class="lif-btn" onclick="toggleLeak()">Toggle leak: <span id="leak-label">ON</span></button>
+  <button class="lif-btn" onclick="resetNeuron()">Reset</button>
+  <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+    <span class="stat-label">Threshold</span>
+    <input type="range" min="40" max="90" value="70" id="thresh-slider" style="width:80px" oninput="updateThresh(this.value)">
+    <span class="stat-label" id="thresh-val">70%</span>
+  </div>
+</div>
+
+<div style="display:flex; gap:16px; margin-bottom:12px;">
+  <div style="flex:1; background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:10px 14px;">
+    <div class="stat-label">Membrane potential</div>
+    <div class="stat-val"><span id="pot-val">0</span>%</div>
+  </div>
+  <div style="flex:1; background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:10px 14px;">
+    <div class="stat-label">Spikes fired</div>
+    <div class="stat-val" id="spike-count">0</div>
+  </div>
+  <div style="flex:1; background:var(--color-background-secondary); border-radius:var(--border-radius-md); padding:10px 14px;">
+    <div class="stat-label">State</div>
+    <div class="stat-val" id="state-label" style="font-size:15px; padding-top:2px;">idle</div>
+  </div>
+</div>
+
+<canvas id="lif-canvas" height="180" style="border:0.5px solid var(--color-border-tertiary); border-radius:var(--border-radius-md); display:block;"></canvas>
+
+<div style="margin-top:10px; font-size:12px; color:var(--color-text-tertiary); line-height:1.6;">
+  Each pulse adds ~18% charge. Leak drains ~3% per second. Hit threshold → spike → reset to 0. Try sending pulses quickly vs slowly.
+</div>
+
+<script>
+const canvas = document.getElementById('lif-canvas');
+const ctx = canvas.getContext('2d');
+
+let potential = 0;
+let threshold = 70;
+let spikeCount = 0;
+let leakOn = true;
+let history = [];
+let spikeTimes = [];
+let lastTime = null;
+let animId = null;
+let refractory = false;
+const MAX_HIST = 300;
+
+function pct(v) { return Math.round(v); }
+
+function updateThresh(v) {
+  threshold = +v;
+  document.getElementById('thresh-val').textContent = v + '%';
+}
+
+function toggleLeak() {
+  leakOn = !leakOn;
+  document.getElementById('leak-label').textContent = leakOn ? 'ON' : 'OFF';
+}
+
+function resetNeuron() {
+  potential = 0;
+  spikeCount = 0;
+  history = [];
+  spikeTimes = [];
+  refractory = false;
+  document.getElementById('spike-count').textContent = '0';
+  document.getElementById('pot-val').textContent = '0';
+  document.getElementById('state-label').textContent = 'idle';
+  document.getElementById('state-label').style.color = 'var(--color-text-primary)';
+}
+
+function sendInput() {
+  if (refractory) return;
+  potential = Math.min(100, potential + 18);
+}
+
+function fire() {
+  spikeCount++;
+  spikeTimes.push(history.length);
+  document.getElementById('spike-count').textContent = spikeCount;
+  document.getElementById('state-label').textContent = 'SPIKE!';
+  document.getElementById('state-label').style.color = '#D85A30';
+  refractory = true;
+  setTimeout(() => {
+    refractory = false;
+    potential = 0;
+    document.getElementById('state-label').textContent = 'recovering';
+    document.getElementById('state-label').style.color = 'var(--color-text-secondary)';
+    setTimeout(() => {
+      if (document.getElementById('state-label').textContent === 'recovering') {
+        document.getElementById('state-label').textContent = 'idle';
+        document.getElementById('state-label').style.color = 'var(--color-text-primary)';
+      }
+    }, 400);
+  }, 60);
+}
+
+function draw() {
+  const W = canvas.offsetWidth;
+  const H = canvas.height;
+  canvas.width = W;
+
+  ctx.clearRect(0, 0, W, H);
+
+  const padL = 42, padR = 12, padT = 14, padB = 28;
+  const gW = W - padL - padR;
+  const gH = H - padT - padB;
+
+  // Grid
+  ctx.strokeStyle = 'rgba(128,128,128,0.12)';
+  ctx.lineWidth = 0.5;
+  for (let p = 0; p <= 100; p += 25) {
+    const y = padT + gH - (p / 100) * gH;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + gW, y); ctx.stroke();
+    ctx.fillStyle = 'rgba(128,128,128,0.55)';
+    ctx.font = '10px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(p + '%', padL - 4, y + 3);
+  }
+
+  // Threshold line
+  const ty = padT + gH - (threshold / 100) * gH;
+  ctx.strokeStyle = '#E24B4A';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.moveTo(padL, ty); ctx.lineTo(padL + gW, ty); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#E24B4A';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'left';
+  ctx.fillText('threshold', padL + 4, ty - 3);
+
+  // History line
+  if (history.length > 1) {
+    const step = gW / MAX_HIST;
+    const startX = padL + Math.max(0, (MAX_HIST - history.length)) * step;
+
+    ctx.beginPath();
+    ctx.lineWidth = 1.8;
+    for (let i = 0; i < history.length; i++) {
+      const x = startX + i * step;
+      const y = padT + gH - (Math.min(history[i], 105) / 100) * gH;
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    // Color: blue normally, orange when near threshold
+    const lastPot = history[history.length - 1];
+    ctx.strokeStyle = lastPot >= threshold ? '#D85A30' : '#378ADD';
+    ctx.stroke();
+
+    // Spike markers
+    spikeTimes.forEach(st => {
+      const offset = history.length - st;
+      if (offset > MAX_HIST) return;
+      const x = startX + (history.length - offset) * step;
+      ctx.strokeStyle = '#D85A30';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + gH); ctx.stroke();
+    });
+  }
+
+  // X axis label
+  ctx.fillStyle = 'rgba(128,128,128,0.55)';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('← time →', padL + gW / 2, H - 6);
+}
+
+function tick(ts) {
+  if (lastTime === null) lastTime = ts;
+  const dt = (ts - lastTime) / 1000;
+  lastTime = ts;
+
+  if (!refractory) {
+    if (leakOn) potential = Math.max(0, potential - 3 * dt);
+    if (potential >= threshold) fire();
+  }
+
+  history.push(potential);
+  if (history.length > MAX_HIST * 2) history = history.slice(-MAX_HIST);
+
+  document.getElementById('pot-val').textContent = pct(potential);
+  if (!refractory && document.getElementById('state-label').textContent !== 'idle') {
+    if (potential > 0) {
+      document.getElementById('state-label').textContent = 'charging';
+      document.getElementById('state-label').style.color = '#185FA5';
+    }
+  }
+  if (!refractory && potential === 0 && document.getElementById('state-label').textContent === 'charging') {
+    document.getElementById('state-label').textContent = 'idle';
+    document.getElementById('state-label').style.color = 'var(--color-text-primary)';
+  }
+
+  draw();
+  animId = requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
+</script>
